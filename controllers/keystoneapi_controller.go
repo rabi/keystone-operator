@@ -660,7 +660,7 @@ func (r *KeystoneAPIReconciler) reconcileNormal(ctx context.Context, instance *k
 	//
 	// create OpenStackClient config
 	//
-	err = r.reconcileConfigMap(ctx, instance)
+	err = r.reconcileConfigMap(ctx, helper, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -723,7 +723,10 @@ func (r *KeystoneAPIReconciler) generateServiceConfigMaps(
 
 // reconcileConfigMap -  creates clouds.yaml
 // TODO: most likely should be part of the higher openstack operator
-func (r *KeystoneAPIReconciler) reconcileConfigMap(ctx context.Context, instance *keystonev1.KeystoneAPI) error {
+func (r *KeystoneAPIReconciler) reconcileConfigMap(
+	ctx context.Context,
+	h *helper.Helper,
+	instance *keystonev1.KeystoneAPI) error {
 
 	configMapName := "openstack-config"
 	var openStackConfig keystone.OpenStackConfig
@@ -763,12 +766,15 @@ func (r *KeystoneAPIReconciler) reconcileConfigMap(ctx context.Context, instance
 			"clouds.yaml": string(cloudsYamlVal),
 			"OS_CLOUD":    "default",
 		}
+		err = controllerutil.SetControllerReference(h.GetBeforeObject(), cm, h.GetScheme())
+		if err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-
 	keystoneSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Spec.Secret,
@@ -809,9 +815,12 @@ func (r *KeystoneAPIReconciler) reconcileConfigMap(ctx context.Context, instance
 		secret.StringData = map[string]string{
 			"secure.yaml": string(secretVal),
 		}
+		err = controllerutil.SetControllerReference(h.GetBeforeObject(), secret, h.GetScheme())
+		if err != nil {
+			return err
+		}
 		return nil
 	})
-
 	return err
 }
 
