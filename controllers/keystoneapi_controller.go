@@ -660,7 +660,7 @@ func (r *KeystoneAPIReconciler) reconcileNormal(ctx context.Context, instance *k
 	//
 	// create OpenStackClient config
 	//
-	err = r.reconcileConfigMap(ctx, helper, instance)
+	err = r.reconcileCloudConfig(ctx, helper, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -723,12 +723,13 @@ func (r *KeystoneAPIReconciler) generateServiceConfigMaps(
 
 // reconcileConfigMap -  creates clouds.yaml
 // TODO: most likely should be part of the higher openstack operator
-func (r *KeystoneAPIReconciler) reconcileConfigMap(
+func (r *KeystoneAPIReconciler) reconcileCloudConfig(
 	ctx context.Context,
 	h *helper.Helper,
-	instance *keystonev1.KeystoneAPI) error {
+	instance *keystonev1.KeystoneAPI,
+) error {
 
-	configMapName := "openstack-config"
+	// clouds.yaml
 	var openStackConfig keystone.OpenStackConfig
 	authURL, err := instance.GetEndpoint(endpoint.EndpointPublic)
 	if err != nil {
@@ -745,36 +746,12 @@ func (r *KeystoneAPIReconciler) reconcileConfigMap(
 	if err != nil {
 		return err
 	}
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: instance.Namespace,
-		},
+	cloudsYaml := map[string]string{
+		"clouds.yaml": string(cloudsYamlVal),
+		"OS_CLOUD":    "default",
 	}
 
-	r.Log.Info("Reconciling ConfigMap", "ConfigMap.Namespace", instance.Namespace, "configMap.Name", configMapName)
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
-		cm.TypeMeta = metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-		}
-		cm.ObjectMeta = metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: instance.Namespace,
-		}
-		cm.Data = map[string]string{
-			"clouds.yaml": string(cloudsYamlVal),
-			"OS_CLOUD":    "default",
-		}
-		err = controllerutil.SetControllerReference(h.GetBeforeObject(), cm, h.GetScheme())
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
+	// secure.yaml
 	keystoneSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Spec.Secret,
@@ -788,40 +765,42 @@ func (r *KeystoneAPIReconciler) reconcileConfigMap(
 		return err
 	}
 
-	secretName := "openstack-config-secret"
 	var openStackConfigSecret keystone.OpenStackConfigSecret
 	openStackConfigSecret.Clouds.Default.Auth.Password = string(keystoneSecret.Data[instance.Spec.PasswordSelectors.Admin])
 
 	secretVal, err := yaml.Marshal(&openStackConfigSecret)
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: instance.Namespace,
-		},
-	}
 	if err != nil {
 		return err
 	}
+	secretString := map[string]string{
+		"secure.yaml": string(secretVal),
+	}
 
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		secret.TypeMeta = metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-		}
-		secret.ObjectMeta = metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: instance.Namespace,
-		}
-		secret.StringData = map[string]string{
-			"secure.yaml": string(secretVal),
-		}
-		err = controllerutil.SetControllerReference(h.GetBeforeObject(), secret, h.GetScheme())
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-	return err
+	templateParameters := make(map[string]interface{})
+	cmLabels := labels.GetLabels(instance, labels.GetGroupLabel(keystone.ServiceName), map[string]string{})
+
+	cms := []util.Template{
+		{
+			Name:          "openstack-config",
+			Namespace:     instance.Namespace,
+			Type:          util.TemplateTypeCustom,
+			InstanceType:  instance.Kind,
+			CustomData:    cloudsYaml,
+			ConfigOptions: templateParameters,
+			Labels:        cmLabels,
+		},
+		{
+			Name:          "openstack-config-secret",
+			Namespace:     instance.Namespace,
+			Type:          util.TemplateTypeCustom,
+			InstanceType:  instance.Kind,
+			CustomData:    secretString,
+			ConfigOptions: templateParameters,
+			Labels:        cmLabels,
+		},
+	}
+
+	return configmap.EnsureConfigMaps(ctx, h, instance, cms, nil)
 }
 
 // ensureFernetKeys - creates secret with fernet keys
